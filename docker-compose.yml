@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: youtube-automation-agent:local
+    restart: unless-stopped
+    env_file:
+      # Optional so the dashboard can start in setup mode before a local .env
+      # has been created. When present, values are injected only at runtime.
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:3456:3456"
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      # This preserves OAuth credentials/tokens while retaining the tracked
+      # credentials.example.json file available on the host.
+      - ./config:/app/config

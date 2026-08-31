@@ -1,0 +1,44 @@
+# Source control and local tooling
+.git/
+.github/
+.agents/
+.codex/
+.vscode/
+.idea/
+node_modules/
+npm-debug.log*
+
+# Secrets and runtime credentials
+.env
+.env.*
+!.env.example
+config/credentials.json
+config/tokens.json
+*.key
+*.pem
+*.cert
+*.crt
+
+# Runtime data is provided by mounted storage, never copied into an image.
+data/
+uploads/
+logs/
+reports/
+temp/
+tmp/
+coverage/
+.nyc_output/
+
+# Documentation and local-only files are not needed to run the service.
+docs/
+examples/
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+README.md
+test.js
+walkthrough.js
+setup.js
+start.bat
+start.sh
+ecosystem.config.js
