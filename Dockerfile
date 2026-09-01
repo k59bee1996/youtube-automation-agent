@@ -25,8 +25,8 @@ COPY --chown=node:node . .
 
 # The application creates subdirectories as needed; these roots must be
 # writable when the container runs as the non-root node user.
-RUN mkdir -p /app/data /app/uploads /app/logs /app/reports \
-    && chown -R node:node /app/data /app/uploads /app/logs /app/reports /app/config
+RUN mkdir -p /app/data /app/uploads /app/logs /app/reports /app/temp \
+    && chown -R node:node /app/data /app/uploads /app/logs /app/reports /app/temp /app/config
 
 USER node
 
