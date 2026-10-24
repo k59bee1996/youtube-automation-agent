@@ -12,6 +12,9 @@ class SEOOptimizerAgent {
 
   async initialize() {
     this.logger.info('Initializing SEO Optimizer Agent...');
+    this.logger.info(
+      `AI routing for titles, descriptions, and tags: ${this.aiTextService.describeRequest({ task: 'seo' })}`
+    );
     await this.loadKeywordDatabase();
     return true;
   }
@@ -99,7 +102,7 @@ class SEOOptimizerAgent {
 Return only valid JSON with this exact shape:
 {
   "title": "SEO title under 100 characters",
-  "description": "YouTube description with useful summary and timestamps if relevant",
+  "description": "YouTube description with a useful summary, but no timestamps or chapters",
   "tags": ["tag"]
 }
 
@@ -109,12 +112,13 @@ Angle: ${strategy.angle}
 Content type: ${strategy.contentType}
 Target audience: ${strategy.targetAudience}
 Keywords: ${(strategy.keywords || []).join(', ')}
-Keep tags under YouTube's 500 character total guidance. Avoid fabricated statistics and unsupported claims.`;
+Do not include timestamps, chapters, or timecodes in the description. The application creates chapters separately from the verified narration timeline.
+Keep tags under YouTube's 500 character total guidance. Avoid fabricated statistics and unsupported claims. Make one precise, search-intent-aligned choice for each field; prioritize clarity, keyword relevance, and strict adherence to the requested JSON shape over novelty.`;
 
     try {
       const response = await this.aiTextService.generateText(prompt, {
-        maxTokens: 1400,
-        temperature: 0.6
+        task: 'seo',
+        maxTokens: 1400
       });
       const parsed = this.parseAIJsonResponse(response);
       const tags = this.normalizeAITags(parsed.tags, strategy);
@@ -123,7 +127,7 @@ Keep tags under YouTube's 500 character total guidance. Avoid fabricated statist
         throw new Error('AI SEO response missing required fields');
       }
 
-      this.logger.info(`Using AI SEO optimization via ${this.aiTextService.providerName}`);
+      this.logger.info(`AI SEO optimization completed via ${this.aiTextService.describeRequest({ task: 'seo' })}`);
       return {
         title: String(parsed.title).trim().slice(0, 100),
         description: String(parsed.description).trim().slice(0, 5000),
@@ -506,7 +510,7 @@ Keep tags under YouTube's 500 character total guidance. Avoid fabricated statist
       seconds: 0
     });
     
-    currentTime = 20; // Intro duration
+    currentTime = Number(script.timing?.introSeconds) || 20;
     
     // Main content chapters
     if (script.mainContent && script.mainContent.sections) {

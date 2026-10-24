@@ -34,12 +34,14 @@ class SystemTest {
       { name: 'Durable Multi-Provider Video Generation', test: () => this.testVideoProviderLayer() },
       { name: 'Scene Repair Studio', test: () => this.testSceneRepairStudio() },
       { name: 'Narration Reliability and Recovery', test: () => this.testNarrationReliability() },
+      { name: 'Narration Duration Pipeline', test: () => this.testNarrationDurationPipeline() },
       { name: 'Shorts Repurposing Studio', test: () => this.testShortsRepurposingStudio() },
       { name: 'Research and Provenance Desk', test: () => this.testProvenanceDesk() },
       { name: 'DarkzSEO Discoverability Preflight', test: () => this.testDiscoverabilityPreflight() },
       { name: 'Resumable Generation Checkpoints', test: () => this.testResumableGenerationCheckpoints() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
+      { name: 'Immediate Publishing Workflow', test: () => this.testImmediatePublishingWorkflow() },
       { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
       { name: 'AI Text Service Token Compatibility', test: () => this.testAITextServiceTokenParams() },
       { name: 'Placeholder Scheduling Guard', test: () => this.testPlaceholderSchedulingGuard() },
@@ -325,7 +327,10 @@ class SystemTest {
       }
       const unavailableStart = await fetch(`http://127.0.0.1:${port}/api/operator/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.API_KEY ? { 'x-api-key': process.env.API_KEY } : {})
+        },
         body: '{}'
       });
       if (unavailableStart.status !== 503) {
@@ -343,7 +348,14 @@ class SystemTest {
       });
       const approveLearning = await fetch(
         `http://127.0.0.1:${port}/api/learning/recommendations/${learningRecommendation.id}/approve`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(process.env.API_KEY ? { 'x-api-key': process.env.API_KEY } : {})
+          },
+          body: '{}'
+        }
       );
       const approvedLearning = await approveLearning.json();
       if (!approveLearning.ok || approvedLearning.result?.status !== 'approved') {
@@ -387,6 +399,7 @@ class SystemTest {
       }
 
       const strategyAgent = new ContentStrategyAgent(db, {});
+      strategyAgent.aiTextService = { isAvailable: () => false };
       strategyAgent.analyzeTrends = async function() {
         this.trendingTopics = [{
           topic: 'practical AI workflows', score: 8, sources: ['trending'],
@@ -540,6 +553,7 @@ class SystemTest {
       if (approved.status !== 'approved') throw new Error('Learning recommendation approval was not persisted');
 
       const strategyAgent = new ContentStrategyAgent(db, {});
+      strategyAgent.aiTextService = { isAvailable: () => false };
       strategyAgent.analyzeTrends = async function() {
         this.trendingTopics = [];
         this.competitorData = [];
@@ -1328,6 +1342,43 @@ class SystemTest {
         lockBlocked = error.status === 409;
       }
       if (!lockBlocked) throw new Error('Locked scene accepted an edit');
+
+      const publishedSchedule = await db.saveScheduleEntry({
+        productionId: production.id,
+        title: production.script.title,
+        publishTime: new Date().toISOString(),
+        status: 'scheduled',
+        priority: 50,
+        metadata: { video: production.assets.finalVideo, audio: production.assets.audio }
+      });
+      publishedSchedule.status = 'published';
+      publishedSchedule.youtubeId = 'published-scene-fixture';
+      publishedSchedule.youtubeUrl = 'https://www.youtube.com/watch?v=published-scene-fixture';
+      await db.updateScheduleEntry(publishedSchedule);
+      await db.updateProductionStatus(production.id, 'published');
+      await db.saveContentReview(production.id, { status: 'approved', editorData: {}, qualityChecks: [] });
+
+      const publishedTarget = (await db.listProductionScenes(production.id)).find(scene => !scene.locked);
+      let publishedEditBlocked = false;
+      try {
+        await service.replaceAsset(production.id, publishedTarget.id, {
+          buffer: replacement, contentType: 'image/png', filename: 'published-revision.png', rightsConfirmed: true
+        });
+      } catch (error) {
+        publishedEditBlocked = error.status === 409;
+      }
+      if (!publishedEditBlocked) throw new Error('Published content accepted a normal scene replacement');
+
+      const localRevision = await service.replaceAsset(production.id, publishedTarget.id, {
+        buffer: replacement, contentType: 'image/png', filename: 'published-revision.png', rightsConfirmed: true,
+        allowPublishedAssetRevision: true
+      });
+      const publishedBundle = await db.getProductionBundle(production.id);
+      const localRevisionEvidence = (await db.listProductionSceneRevisions(production.id))
+        .find(revision => revision.after?.id === publishedTarget.id && revision.costEvidence?.localPublishedRevision === true);
+      if (localRevision.status !== 'published_revision' || publishedBundle.review_status !== 'approved' || !localRevisionEvidence) {
+        throw new Error('A published local scene revision changed approval state or lost its audit evidence');
+      }
     } finally {
       await db.close();
       await fs.rm(directory, { recursive: true, force: true });
@@ -1461,6 +1512,85 @@ class SystemTest {
       await fs.rm(directory, { recursive: true, force: true });
     }
     this.logger.info('Narration reliability and recovery test completed successfully');
+  }
+
+  async testNarrationDurationPipeline() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { ScriptWriterAgent } = require('./agents/script-writer-agent');
+    const { AIVideoGenerator } = require('./utils/ai-video-generator');
+    const { OperatorService } = require('./utils/operator-service');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-duration-'));
+    const words = count => Array.from({ length: count }, (_, index) => `word${index + 1}`).join(' ');
+    const videoPath = path.join(directory, 'video.mp4');
+    const audioPath = path.join(directory, 'narration.mp3');
+    const thumbnailPath = path.join(directory, 'thumbnail.png');
+
+    try {
+      await Promise.all([
+        fs.writeFile(videoPath, Buffer.from('video fixture')),
+        fs.writeFile(audioPath, Buffer.from('audio fixture')),
+        fs.writeFile(thumbnailPath, Buffer.from('thumbnail fixture'))
+      ]);
+
+      const script = {
+        title: 'Duration fixture',
+        hook: { text: words(75) },
+        introduction: {},
+        mainContent: { sections: [{ title: 'Main', content: [words(75), words(75)] }] },
+        conclusion: { recap: [], finalThought: words(75) },
+        callToAction: {}
+      };
+      script.fullScript = [script.hook.text, ...script.mainContent.sections[0].content, script.conclusion.finalThought].join(' ');
+
+      const writer = Object.create(ScriptWriterAgent.prototype);
+      writer.logger = { warn: () => {} };
+      writer.applyNarrationTiming(script, { requestedLength: '2-4 minutes', requestedLengthKey: 'short' });
+      if (
+        script.mainContent.sections[0].duration !== 60 ||
+        script.mainContent.totalDuration !== 60 ||
+        script.timing.estimatedDurationSeconds !== 120 ||
+        script.duration !== '2:00'
+      ) {
+        throw new Error('Script narration timing did not derive section and total duration from spoken words');
+      }
+
+      const videoGenerator = Object.create(AIVideoGenerator.prototype);
+      if (videoGenerator.calculateScriptDuration(script) !== 120) {
+        throw new Error('Video duration estimation omitted array-based narration content');
+      }
+
+      const operator = new OperatorService({ getRow: async () => ({ count: 1 }) });
+      const production = {
+        strategy: { topic: 'Duration fixture', requestedLength: '2-4 minutes', requestedLengthKey: 'short' },
+        script,
+        seo: {
+          title: script.title,
+          description: 'A sufficiently detailed description for the narration duration pipeline fixture.',
+          tags: ['duration', 'narration', 'video']
+        },
+        assets: {
+          finalVideo: { path: videoPath, simulated: false, durationSeconds: 120 },
+          audio: { path: audioPath, simulated: false },
+          thumbnail: { path: thumbnailPath }
+        },
+        provenance: { status: 'not_required' }
+      };
+      const passing = await operator.runQualityChecks(production, {});
+      if (!passing.checks.find(check => check.id === 'video_duration' && check.passed)) {
+        throw new Error('A final video inside the requested duration range did not pass Quality Review');
+      }
+
+      production.assets.finalVideo.durationSeconds = 60;
+      const failing = await operator.runQualityChecks(production, {});
+      if (!failing.blockingFailures.includes('video_duration')) {
+        throw new Error('A final video outside the requested duration range was not blocked');
+      }
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+
+    this.logger.info('Narration duration pipeline test completed successfully');
   }
 
   async testShortsRepurposingStudio() {
@@ -2176,6 +2306,80 @@ class SystemTest {
     this.logger.info('Publishing safety test completed successfully');
   }
 
+  async testImmediatePublishingWorkflow() {
+    const { YouTubeAutomationAgent } = require('./index');
+    const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-agent');
+    const calls = [];
+    const schedule = {
+      id: 'schedule-now', productionId: 'production-now', title: 'Publish now fixture',
+      publishTime: new Date(Date.now() + 86400000).toISOString(), status: 'scheduled',
+      metadata: { privacyStatus: 'public' }
+    };
+    const agent = new YouTubeAutomationAgent();
+    agent.approveContent = async (productionId, input) => {
+      calls.push(['approve', productionId]);
+      if (!input.publishTime || !/immediate publication/.test(input.reviewNotes)) {
+        throw new Error('Immediate publishing did not pass an explicit approval timestamp and review note');
+      }
+      return { productionId, reviewStatus: 'approved', qualityScore: 100, schedule };
+    };
+    agent.db = {
+      updateScheduleEntry: async entry => calls.push(['schedule', entry.status, entry.metadata.publishImmediately]),
+      updateProductionStatus: async (_productionId, status) => calls.push(['production', status])
+    };
+    agent.agents = {
+      publishing: {
+        loadPublishQueue: async () => calls.push(['queue']),
+        publishContent: async productionId => {
+          calls.push(['publish', productionId]);
+          return { productionId, status: 'published', youtubeUrl: 'https://www.youtube.com/watch?v=publish-now' };
+        }
+      }
+    };
+    agent.operator = { notify: async notification => calls.push(['notify', notification.type]) };
+
+    const result = await agent.approveAndPublishNow('production-now', { factChecked: true, rightsConfirmed: true });
+    if (
+      result.publish.status !== 'published' ||
+      schedule.metadata.publishImmediately !== true ||
+      !calls.some(call => call[0] === 'publish') ||
+      !calls.some(call => call[0] === 'production' && call[1] === 'published') ||
+      !calls.some(call => call[0] === 'notify' && call[1] === 'content_published')
+    ) {
+      throw new Error('Approve-and-publish-now did not persist and report the immediate upload lifecycle');
+    }
+
+    let uploadRequest;
+    const publishing = new PublishingSchedulingAgent({ updateScheduleEntry: async () => {} }, {});
+    publishing.youtube = {
+      videos: {
+        insert: async request => {
+          uploadRequest = request;
+          return { data: { id: 'publish-now' } };
+        }
+      }
+    };
+    publishing.getVideoStream = async () => Buffer.from('video');
+    await publishing.uploadToYouTube({
+      productionId: 'production-now', publishTime: new Date().toISOString(), status: 'scheduled',
+      metadata: {
+        publishImmediately: true,
+        privacyStatus: 'public',
+        video: { path: 'fixture.mp4' },
+        seo: {
+          title: 'Publish now fixture',
+          description: 'A complete fixture description for immediate YouTube publishing behavior.',
+          tags: ['publishing', 'youtube', 'workflow']
+        }
+      }
+    });
+    if (uploadRequest.requestBody.status.privacyStatus !== 'public' || uploadRequest.requestBody.status.publishAt !== undefined) {
+      throw new Error('Immediate YouTube upload included an invalid publishAt or lost the selected privacy status');
+    }
+
+    this.logger.info('Immediate publishing workflow test completed successfully');
+  }
+
   async testCredentialValidation() {
     const { PROVIDERS } = require('./utils/ai-text-service');
     const manager = new CredentialManager();
@@ -2243,11 +2447,22 @@ class SystemTest {
 
       const result = await service.generateText('test prompt', { maxTokens: 512 });
       if (result !== '{"ok":true}') throw new Error('generateText did not return the model content');
+      if (calls[0].model !== 'gpt-5.6-luna' || calls[0].reasoning_effort !== 'none') {
+        throw new Error('Default OpenAI requests did not use the low-cost task profile');
+      }
       if (calls[0].max_completion_tokens !== 512) {
         throw new Error('Modern models must receive max_completion_tokens, not max_tokens');
       }
       if (calls[0].max_tokens !== undefined) {
         throw new Error('Legacy max_tokens must not be sent to modern models');
+      }
+      if (calls[0].temperature !== undefined) {
+        throw new Error('GPT-5.6 requests must not include temperature');
+      }
+
+      await service.generateText('strategy prompt', { task: 'strategy', maxTokens: 256 });
+      if (calls[1].model !== 'gpt-5.6-terra' || calls[1].reasoning_effort !== 'medium') {
+        throw new Error('Strategy requests did not use the configured reasoning profile');
       }
 
       // Legacy models reject max_completion_tokens with a 400 — the service must
@@ -2294,6 +2509,9 @@ class SystemTest {
       geminiService.client = null;
       geminiService.model = 'gemini-3.7-flash';
       geminiService.providerName = 'Google Gemini';
+      geminiService.providerId = 'gemini';
+      geminiService.usesOpenAIModelRouting = false;
+      geminiService.logger = { info: () => {} };
 
       const geminiResult = await geminiService.generateText('gemini prompt', { temperature: 0.2 });
       if (geminiResult !== 'gemini-ok') throw new Error('Gemini generation did not return content');

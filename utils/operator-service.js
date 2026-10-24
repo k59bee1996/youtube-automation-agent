@@ -1,6 +1,7 @@
 const fs = require('fs').promises;
 const axios = require('axios');
 const { Logger } = require('./logger');
+const { probeMediaDuration } = require('./ffmpeg');
 
 class OperatorService {
   constructor(db) {
@@ -53,6 +54,20 @@ class OperatorService {
     if (finalVideo?.path && !finalVideo?.simulated) {
       checks.push(this.check('video_file', await this.fileExists(finalVideo.path),
         'Final video file exists on disk'));
+
+      const targetRange = this.getRequestedDurationRange(production.strategy || {});
+      if (targetRange) {
+        const actualSeconds = Number(finalVideo.durationSeconds) || await probeMediaDuration(finalVideo.path);
+        const passed = Number.isFinite(actualSeconds) && actualSeconds >= targetRange.min && actualSeconds <= targetRange.max;
+        const actualLabel = Number.isFinite(actualSeconds) ? this.formatDuration(actualSeconds) : 'unverified';
+        checks.push(this.check(
+          'video_duration',
+          passed,
+          passed
+            ? `Final video is ${actualLabel}, within the requested ${production.strategy.requestedLength}`
+            : `Final video is ${actualLabel}; requested ${production.strategy.requestedLength} (${this.formatDuration(targetRange.min)}-${this.formatDuration(targetRange.max)})`
+        ));
+      }
     }
 
     const audio = production.assets?.audio || {};
@@ -144,6 +159,23 @@ class OperatorService {
 
   check(id, passed, message, blocking = true) {
     return { id, passed: Boolean(passed), blocking, message };
+  }
+
+  getRequestedDurationRange(strategy = {}) {
+    const requested = String(strategy.requestedLength || '').toLowerCase();
+    const match = requested.match(/(\d+)\s*(?:-|–|to)\s*(\d+)\s*minutes?/);
+    if (match) return { min: Number(match[1]) * 60, max: Number(match[2]) * 60 };
+
+    const key = String(strategy.requestedLengthKey || '').toLowerCase();
+    if (key === 'short') return { min: 120, max: 240 };
+    if (key === 'medium') return { min: 480, max: 720 };
+    if (key === 'long') return { min: 900, max: 1200 };
+    return null;
+  }
+
+  formatDuration(seconds) {
+    const wholeSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+    return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, '0')}`;
   }
 
   async fileExists(filePath) {

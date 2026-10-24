@@ -8,6 +8,56 @@ const GEMINI_MODELS = [
 ];
 const GEMINI_DEFAULT_MODEL = GEMINI_MODELS[0];
 
+// Keep task-specific model decisions in one place. Agents select a profile, but
+// the transport-specific request handling stays in AITextService.
+const MODEL_CONFIG = Object.freeze({
+  strategy: Object.freeze({
+    model: 'gpt-5.6-terra',
+    reasoning_effort: 'medium',
+  }),
+  script: Object.freeze({
+    model: 'gpt-5.6-terra',
+    reasoning_effort: 'low',
+  }),
+  seo: Object.freeze({
+    model: 'gpt-5.6-luna',
+    reasoning_effort: 'none',
+  }),
+  default: Object.freeze({
+    model: 'gpt-5.6-luna',
+    reasoning_effort: 'none',
+  }),
+});
+
+function isGPT56Model(model) {
+  return /(?:^|\/)gpt-5\.6(?:-|$)/i.test(model || '');
+}
+
+// Sampling-parameter support is not uniform across OpenAI-compatible APIs.
+// Keep the documented capability map for visibility, but leave sampling at the
+// provider default for every request. Task-specific output guidance belongs in
+// prompts, which avoids unsupported-parameter errors across providers.
+const MODEL_CAPABILITIES = Object.freeze({
+  openai: Object.freeze({
+    default: Object.freeze({ supportsTemperature: true }),
+    'gpt-5.6': Object.freeze({ supportsTemperature: false, supportsReasoningEffort: true }),
+    'gpt-5.6-terra': Object.freeze({ supportsTemperature: false, supportsReasoningEffort: true }),
+    'gpt-5.6-luna': Object.freeze({ supportsTemperature: false, supportsReasoningEffort: true }),
+  }),
+  // OpenRouter can route one model to different upstream providers. Its listed
+  // Claude/GPT/Gemini models reject or do not document temperature; use the
+  // provider default for every listed route to avoid backend-specific 400s.
+  openrouter: Object.freeze({ default: Object.freeze({ supportsTemperature: false }) }),
+  // Moonshot and MiMo's public documentation does not guarantee temperature
+  // support for every model exposed by their OpenAI-compatible endpoints.
+  kimi: Object.freeze({ default: Object.freeze({ supportsTemperature: false }) }),
+  mimo: Object.freeze({ default: Object.freeze({ supportsTemperature: false }) }),
+  // Z.AI documents temperature for its chat-completions API.
+  glm: Object.freeze({ default: Object.freeze({ supportsTemperature: true }) }),
+  // Gemini 3.x requires sampling parameters to be removed.
+  gemini: Object.freeze({ default: Object.freeze({ supportsTemperature: false }) }),
+});
+
 const PROVIDERS = {
   openai: {
     name: 'OpenAI',
@@ -47,12 +97,15 @@ const PROVIDERS = {
 };
 
 class AITextService {
-  constructor(credentials = {}) {
+  constructor(credentials = {}, options = {}) {
     this.logger = new Logger('AITextService');
     this.client = null;
     this.gemini = null;
     this.model = null;
     this.providerName = null;
+    this.providerId = null;
+    this.usesOpenAIModelRouting = false;
+    this.providerPreference = options.provider || null;
 
     this._init(credentials);
   }
@@ -61,6 +114,13 @@ class AITextService {
     const provider = credentials.aiProvider?.provider;
     const apiKey = credentials.aiProvider?.apiKey;
     const model = credentials.aiProvider?.model;
+
+    if (this.providerPreference === 'gemini') {
+      const geminiKey = credentials.gemini?.apiKey || process.env.GEMINI_API_KEY;
+      if (geminiKey) return this._initGemini(geminiKey, credentials.gemini?.model);
+      this.logger.warn('Google Gemini was requested for this task, but no Gemini API key is configured');
+      return;
+    }
 
     if (provider && PROVIDERS[provider] && apiKey) {
       return this._initOpenAICompatible(PROVIDERS[provider], apiKey, model);
@@ -85,6 +145,8 @@ class AITextService {
     this.client = new OpenAI({ apiKey, baseURL: preset.baseURL });
     this.model = model || preset.defaultModel;
     this.providerName = preset.name;
+    this.providerId = Object.entries(PROVIDERS).find(([, value]) => value === preset)?.[0] || null;
+    this.usesOpenAIModelRouting = this.providerId === 'openai';
     this.logger.info(`${preset.name} initialized (model: ${this.model})`);
   }
 
@@ -94,20 +156,59 @@ class AITextService {
       this.gemini = new GoogleGenAI({ apiKey });
       this.model = model || GEMINI_DEFAULT_MODEL;
       this.providerName = 'Google Gemini';
+      this.providerId = 'gemini';
       this.logger.info(`Gemini initialized (model: ${this.model})`);
     } catch (error) {
       this.logger.error('Failed to initialize Gemini:', error.message);
     }
   }
 
+  getRequestDetails(options = {}) {
+    const task = options.task || 'default';
+    const modelConfig = MODEL_CONFIG[task] || MODEL_CONFIG.default;
+    const model = options.model || (
+      this.usesOpenAIModelRouting ? modelConfig.model : this.model
+    );
+    const capabilities = this.getModelCapabilities(model);
+    const usesGPT56Settings = capabilities.supportsReasoningEffort && isGPT56Model(model);
+
+    return {
+      task,
+      provider: this.providerName || 'unavailable',
+      model: model || 'unavailable',
+      maxTokens: options.maxTokens || 2048,
+      reasoningEffort: usesGPT56Settings
+        ? options.reasoning_effort || modelConfig.reasoning_effort
+        : null,
+      temperatureSupported: capabilities.supportsTemperature,
+      available: this.isAvailable(),
+    };
+  }
+
+  getModelCapabilities(model) {
+    const providerCapabilities = MODEL_CAPABILITIES[this.providerId] || MODEL_CAPABILITIES.openrouter;
+    return providerCapabilities[model] || providerCapabilities.default;
+  }
+
+  describeRequest(options = {}) {
+    const details = this.getRequestDetails(options);
+    const settings = details.reasoningEffort
+      ? `reasoning_effort=${details.reasoningEffort}`
+      : 'sampling=provider default';
+    return `task=${details.task}, provider=${details.provider}, model=${details.model}, ${settings}`;
+  }
+
   async generateText(prompt, options = {}) {
-    const model = options.model || this.model;
-    const maxTokens = options.maxTokens || 2048;
-    const temperature = options.temperature ?? 0.7;
+    const details = this.getRequestDetails(options);
+    const { task, model, maxTokens, reasoningEffort } = details;
+
+    this.logger.info(
+      `AI text request: task=${task}, provider=${details.provider}, model=${model}, ` +
+      `${reasoningEffort ? `reasoning_effort=${reasoningEffort}` : 'sampling=provider default'}, max_tokens=${maxTokens}`
+    );
 
     if (this.gemini) {
       const config = { maxOutputTokens: maxTokens };
-      if (!/^gemini-3\.(?:[5-9]|\d{2,})-/.test(model)) config.temperature = temperature;
       const response = await this.gemini.models.generateContent({
         model,
         contents: prompt,
@@ -129,8 +230,14 @@ class AITextService {
     const params = {
       model,
       messages: [{ role: 'user', content: prompt }],
-      temperature,
     };
+
+    // GPT-5.6 controls deliberation through reasoning_effort and rejects
+    // non-default temperatures. Other OpenAI-compatible models keep their
+    // existing temperature behavior.
+    if (reasoningEffort) {
+      params.reasoning_effort = reasoningEffort;
+    }
 
     try {
       // Newer OpenAI models (gpt-5.x and later) reject the legacy max_tokens
@@ -182,4 +289,12 @@ class AITextService {
   }
 }
 
-module.exports = { AITextService, PROVIDERS, GEMINI_MODELS, GEMINI_DEFAULT_MODEL };
+module.exports = {
+  AITextService,
+  PROVIDERS,
+  GEMINI_MODELS,
+  GEMINI_DEFAULT_MODEL,
+  MODEL_CONFIG,
+  MODEL_CAPABILITIES,
+  isGPT56Model,
+};

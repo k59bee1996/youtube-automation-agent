@@ -51,6 +51,18 @@ async function api(url, options = {}, retry = true) {
 }
 
 function showToast(message, type = 'success') {
+  const reviewDialog = $('#content-dialog');
+  const reviewFeedback = $('#content-review-feedback');
+  // Native dialogs render above the global toast. Show feedback inside an
+  // active review dialog so success and error messages remain visible.
+  if (reviewDialog?.open && reviewFeedback) {
+    reviewFeedback.textContent = message;
+    reviewFeedback.className = `callout review-feedback ${type}`;
+    reviewFeedback.hidden = false;
+    reviewFeedback.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return;
+  }
+
   const toast = $('#toast');
   toast.textContent = message;
   toast.className = `toast ${type}`;
@@ -896,6 +908,7 @@ function renderSceneEditor(item, canReview = true) {
       <div><p class="eyebrow">SCENE REPAIR STUDIO</p><h3>Repair the timeline, not the whole video</h3><p>Edit, replace, or regenerate one scene. Changes remain draft-only until the timeline is rebuilt and approved.</p></div>
       ${canReview ? `<button type="button" class="button primary small" data-rebuild-scenes="${escapeHTML(item.id)}">Rebuild final video</button>` : ''}
     </div>
+    <section class="manual-media-panel"><div><p class="eyebrow">CHATGPT MANUAL MEDIA</p><strong>Export or import one scene at a time</strong><p>Each scene has its own export and media-import control below. This does not call an AI API. For published videos, imported media is retained as a local revision only; it cannot replace the file already published on YouTube.</p></div></section>
     <div class="narration-recovery ${intentionalSilence ? 'intentional' : narrationIssues ? 'attention' : ''}">
       <div><p class="eyebrow">NARRATION RELIABILITY</p><strong>${intentionalSilence ? 'Intentional silence confirmed' : narrationIssues ? `${narrationIssues} scene${narrationIssues === 1 ? '' : 's'} need narration` : 'Narration evidence is current'}</strong>
       <p>${intentionalSilence ? escapeHTML(audio.silenceReason || '') : audio.error ? escapeHTML(audio.error) : 'Regenerate narration without replacing the scene visual. Approval remains blocked until audio is ready.'}</p>
@@ -914,7 +927,7 @@ function renderSceneEditor(item, canReview = true) {
             ? `<video controls preload="metadata"><source src="${escapeHTML(scene.assetUrl)}"></video>`
             : `<img src="${escapeHTML(scene.assetUrl)}" alt="${escapeHTML(scene.label)} scene asset">`
           : '<div class="preview-placeholder">No scene asset</div>';
-        return `<article class="scene-card ${scene.locked ? 'locked' : ''}" data-scene-card="${escapeHTML(scene.id)}">
+        return `<article class="scene-card ${scene.locked ? 'locked' : ''}" data-scene-card="${escapeHTML(scene.id)}" data-scene-position="${index + 1}" data-scene-asset-url="${escapeHTML(scene.assetUrl || '')}" data-scene-asset-type="${escapeHTML(scene.assetType || '')}">
           <div class="scene-card-top">
             <div class="scene-preview">${preview}<span class="scene-number">${index + 1}</span></div>
             <div class="scene-identity">
@@ -931,6 +944,10 @@ function renderSceneEditor(item, canReview = true) {
             <span>Visual: ${escapeHTML(scene.provider || 'local')} ${scene.model ? `· ${escapeHTML(scene.model)}` : ''}</span>
           </div>
           <div class="scene-narration-evidence"><span>Narration: ${escapeHTML(scene.narrationProvider || 'not generated')}${scene.narrationModel ? ` · ${escapeHTML(scene.narrationModel)}` : ''}${scene.narrationTaskId ? ` · task ${escapeHTML(scene.narrationTaskId)}` : ''}</span>${scene.narrationError ? `<span class="danger-text">${escapeHTML(scene.narrationError)}</span>` : ''}</div>
+          <div class="scene-actions manual-single-scene-actions">
+            <button type="button" class="text-button" data-export-single-scene="${escapeHTML(item.id)}">Export this scene</button>
+            <label class="text-button upload-button">Import media<input type="file" data-scene-manual-import accept="image/png,image/jpeg,image/webp,video/mp4"></label>
+          </div>
           ${canReview ? `<div class="scene-actions">
             <button type="button" class="text-button" data-scene-move="up" ${disabled || index === 0 ? 'disabled' : ''}>↑ Earlier</button>
             <button type="button" class="text-button" data-scene-move="down" ${disabled || index === scenes.length - 1 ? 'disabled' : ''}>↓ Later</button>
@@ -988,6 +1005,8 @@ function renderShortsStudio(item) {
 
 async function openContent(productionId) {
   $('#loading').classList.add('active');
+  const reviewFeedback = $('#content-review-feedback');
+  if (reviewFeedback) reviewFeedback.hidden = true;
   try {
     const item = await api(`/api/content/${encodeURIComponent(productionId)}`);
     const data = item.editorData || {};
@@ -1031,7 +1050,7 @@ async function openContent(productionId) {
             <label class="toggle"><input name="factChecked" type="checkbox" ${data.factChecked ? 'checked' : ''}><span></span> Facts and claims reviewed</label>
             <label class="toggle"><input name="rightsConfirmed" type="checkbox" ${data.rightsConfirmed ? 'checked' : ''}><span></span> Media rights confirmed</label>
           </div>
-          ${canReview ? `<div class="form-actions"><button type="button" class="button primary" data-approve-content="${escapeHTML(item.id)}">Approve & schedule</button><button type="button" class="button secondary" data-save-content="${escapeHTML(item.id)}">Save draft</button><button type="button" class="button danger" data-reject-content="${escapeHTML(item.id)}">Reject</button><button type="button" class="button ghost" data-retry-content="${escapeHTML(item.id)}">Regenerate</button></div>` : `<a class="button secondary" href="${escapeHTML(item.schedule?.youtube_url || '#')}" target="_blank" rel="noopener">Open on YouTube</a>`}
+          ${canReview ? `<div class="form-actions"><button type="button" class="button primary" data-approve-content="${escapeHTML(item.id)}">Approve & schedule</button><button type="button" class="button danger" data-approve-publish-now="${escapeHTML(item.id)}">Approve & publish now</button><button type="button" class="button secondary" data-save-content="${escapeHTML(item.id)}">Save draft</button><button type="button" class="button danger" data-reject-content="${escapeHTML(item.id)}">Reject</button><button type="button" class="button ghost" data-retry-content="${escapeHTML(item.id)}">Regenerate</button></div>` : `<a class="button secondary" href="${escapeHTML(item.schedule?.youtube_url || '#')}" target="_blank" rel="noopener">Open on YouTube</a>`}
       </form>`;
     $('#content-review-form').dataset.productionId = item.id;
     $('#content-dialog').showModal();
@@ -1090,10 +1109,10 @@ function shortFormData(card) {
 }
 
 async function refreshContentDialog(productionId, message) {
-  if (message) showToast(message);
   if ($('#content-dialog').open) $('#content-dialog').close();
   await refreshDashboard(true);
   await openContent(productionId);
+  if (message) showToast(message);
 }
 
 async function uploadSceneAsset(productionId, sceneId, file) {
@@ -1114,6 +1133,84 @@ async function uploadSceneAsset(productionId, sceneId, file) {
     await refreshContentDialog(productionId, 'Scene asset replaced. Rebuild before approval.');
   } catch (error) {
     showToast(error.message, 'error');
+  } finally {
+    $('#loading').classList.remove('active');
+  }
+}
+
+function sceneSlug(value) {
+  return String(value || 'scene').toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'scene';
+}
+
+function exportSingleScenePackage(productionId, card) {
+  const position = Number(card.dataset.scenePosition || 1);
+  const label = card.querySelector('[data-scene-field="label"]')?.value || `Scene ${position}`;
+  const extension = card.dataset.sceneAssetType === 'video' ? 'mp4' : 'png';
+  const scene = {
+    sceneId: card.dataset.sceneCard,
+    order: position,
+    label,
+    durationSeconds: Number(card.querySelector('[data-scene-field="duration"]')?.value || 0),
+    narration: card.querySelector('[data-scene-field="scriptText"]')?.value || '',
+    visualPrompt: card.querySelector('[data-scene-field="prompt"]')?.value || '',
+    referenceAsset: card.dataset.sceneAssetUrl ? {
+      downloadUrl: new URL(card.dataset.sceneAssetUrl, window.location.origin).href,
+      type: card.dataset.sceneAssetType || 'unknown'
+    } : null,
+    suggestedOutputFileName: `${String(position).padStart(2, '0')}-${sceneSlug(label)}.${extension}`
+  };
+  const payload = {
+    format: 'youtube-automation-scene-package', version: 1,
+    exportedAt: new Date().toISOString(), productionId,
+    instructions: {
+      use: 'Use visualPrompt and the downloaded reference asset manually in ChatGPT. This file may contain unpublished narration.',
+      import: 'Download the reference asset from its URL, then import one PNG/JPG/WebP/MP4 through the same scene card.'
+    },
+    scenes: [scene]
+  };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `${String(position).padStart(2, '0')}-${sceneSlug(label)}-scene-package.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  if (card.dataset.sceneAssetUrl) {
+    const reference = document.createElement('a');
+    reference.href = card.dataset.sceneAssetUrl;
+    reference.download = `${String(position).padStart(2, '0')}-${sceneSlug(label)}-reference.${extension}`;
+    document.body.appendChild(reference);
+    reference.click();
+    reference.remove();
+  }
+  showToast(`Scene ${position} package exported${card.dataset.sceneAssetUrl ? ' with its reference asset.' : '.'}`);
+}
+
+async function importManualSceneAsset(productionId, card, file) {
+  const published = !card.querySelector('[data-scene-save]');
+  const message = published
+    ? 'This video is already published. Import the file as a local revision only? The YouTube video will not change.'
+    : 'Replace this scene asset with the imported media?';
+  if (!confirm(`${message} Confirm you have rights to use this file.`)) return;
+  const synthetic = confirm('Does this replacement contain realistic altered or synthetic media that should be disclosed to YouTube?');
+  $('#loading').classList.add('active');
+  try {
+    await api(`/api/content/${encodeURIComponent(productionId)}/scenes/${encodeURIComponent(card.dataset.sceneCard)}/asset`, {
+      method: 'PUT', body: file,
+      headers: {
+        'Content-Type': file.type || (file.name.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'image/png'),
+        'x-file-name': file.name,
+        'x-rights-confirmed': 'true',
+        'x-synthetic-media': String(synthetic),
+        'x-local-published-revision': String(published)
+      }
+    });
+    await refreshContentDialog(productionId, published
+      ? 'Local revision imported. The already-published YouTube video is unchanged.'
+      : 'Scene asset imported. Rebuild the final video before approval.');
   } finally {
     $('#loading').classList.remove('active');
   }
@@ -1409,6 +1506,13 @@ document.addEventListener('click', async event => {
     return;
   }
 
+  const exportSingleScene = event.target.closest('[data-export-single-scene]');
+  if (exportSingleScene) {
+    const card = exportSingleScene.closest('[data-scene-card]');
+    if (card) exportSingleScenePackage(exportSingleScene.dataset.exportSingleScene, card);
+    return;
+  }
+
   const sceneButton = event.target.closest('[data-scene-save], [data-scene-narration], [data-scene-regenerate], [data-scene-lock], [data-scene-move]');
   if (sceneButton) {
     const card = sceneButton.closest('[data-scene-card]');
@@ -1545,9 +1649,33 @@ document.addEventListener('click', async event => {
   if (approve) {
     try {
       await persistProvenance(approve.dataset.approveContent);
-      await mutate(`/api/content/${encodeURIComponent(approve.dataset.approveContent)}/approve`, 'POST', contentFormData(), 'Content approved and scheduled.');
+      await api(`/api/content/${encodeURIComponent(approve.dataset.approveContent)}/approve`, {
+        method: 'POST', body: JSON.stringify(contentFormData())
+      });
       $('#content-dialog').close();
-    } catch (_error) { /* toast already shown */ }
+      await refreshDashboard(true);
+      showToast('Content approved and scheduled.');
+    } catch (error) { showToast(error.message, 'error'); }
+    return;
+  }
+
+  const approvePublishNow = event.target.closest('[data-approve-publish-now]');
+  if (approvePublishNow) {
+    const privacy = $('#content-review-form')?.elements.privacyStatus?.value || 'private';
+    if (!confirm(`Approve and upload this video to YouTube now as ${privacy}? This cannot be undone from this app.`)) return;
+    try {
+      await persistProvenance(approvePublishNow.dataset.approvePublishNow);
+      const result = await api(`/api/content/${encodeURIComponent(approvePublishNow.dataset.approvePublishNow)}/approve-publish-now`, {
+        method: 'POST', body: JSON.stringify(contentFormData())
+      });
+      const url = result.result?.publish?.youtubeUrl;
+      $('#content-dialog').close();
+      await refreshDashboard(true);
+      showToast(url ? 'Video uploaded to YouTube.' : 'Content approved and uploaded.');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    return;
   }
 
   const reject = event.target.closest('[data-reject-content]');
@@ -1588,6 +1716,15 @@ document.addEventListener('change', event => {
     if (file && card && productionId) {
       uploadSceneAsset(productionId, card.dataset.sceneCard, file);
     }
+  }
+  if (event.target.matches('[data-scene-manual-import]')) {
+    const file = event.target.files?.[0];
+    const card = event.target.closest('[data-scene-card]');
+    const productionId = $('#content-review-form')?.dataset.productionId;
+    if (file && card && productionId) {
+      importManualSceneAsset(productionId, card, file).catch(error => showToast(error.message, 'error'));
+    }
+    event.target.value = '';
   }
 });
 

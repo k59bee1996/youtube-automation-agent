@@ -578,6 +578,10 @@ label:has(input:disabled) > span { color: var(--muted); }
 .scene-heading { align-items: flex-start; margin: 0; }
 .scene-heading h3 { font-size: 16px; margin: 2px 0 0; }
 .scene-heading p:not(.eyebrow) { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 6px 0 0; }
+.manual-media-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; border: 1px solid rgba(110, 168, 255, .3); background: rgba(110, 168, 255, .055); border-radius: var(--radius-sm); padding: 12px 14px; }
+.manual-media-panel strong { display: block; margin-top: 2px; font-size: 13px; }
+.manual-media-panel p:not(.eyebrow) { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 5px 0 0; }
+.manual-media-panel code { color: var(--blue); font-family: var(--font-mono); }
 
 .narration-recovery { display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 1px solid rgba(61, 220, 151, .25); background: rgba(61, 220, 151, .05); border-radius: var(--radius-sm); padding: 12px 14px; }
 .narration-recovery.attention { border-color: rgba(255, 107, 122, .38); background: rgba(255, 77, 94, .06); }
@@ -670,6 +674,9 @@ label:has(input:disabled) > span { color: var(--muted); }
   background: var(--blue-soft); border: 1px solid rgba(110, 168, 255, .2); padding: 12px 14px;
   border-radius: var(--radius-sm); color: #b9d0fb; font-size: 12px; line-height: 1.55; margin: 0;
 }
+.review-feedback { margin-bottom: 2px; }
+.review-feedback.error { color: #ffb4b4; border-color: rgba(255, 98, 98, .35); background: rgba(255, 98, 98, .1); }
+.review-feedback.success { color: #a8f1d2; border-color: rgba(70, 210, 151, .35); background: rgba(70, 210, 151, .1); }
 
 /* ============ Dialogs ============ */
 .dialog {
@@ -1042,3 +1049,7 @@ body.scrolled .topbar { border-color: rgba(151, 167, 195, .32); }
 .comment-card { border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 8px; margin-bottom: 12px; }
 .comment-original { opacity: 0.8; font-size: 0.9rem; white-space: pre-wrap; margin: 0; }
 .comment-card textarea { width: 100%; min-height: 72px; resize: vertical; }
+
+@media (max-width: 760px) {
+  .manual-media-panel { grid-template-columns: 1fr; }
+}

@@ -293,6 +293,11 @@ class ProductionManagementAgent {
     return Math.min(100, priority);
   }
 
+  formatDuration(seconds) {
+    const wholeSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+    return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, '0')}`;
+  }
+
   async generateVideoContent(productionData) {
     this.logger.info('Generating AI video content...');
     
@@ -428,10 +433,23 @@ class ProductionManagementAgent {
       const generatedPath = await this.aiVideoGenerator.generateTTSAudio(ttsText, audioPath);
       const evidence = this.aiVideoGenerator.lastNarrationResult || {};
       const usable = await this.aiVideoGenerator.isUsableAudioFile(generatedPath);
+      const actualDuration = usable ? await this.aiVideoGenerator.getMediaDuration(generatedPath) : null;
+
+      // Generated narration is the reliable timeline for assembly and scene
+      // repair; do not retain a model-declared duration once audio exists.
+      if (actualDuration) {
+        productionData.estimatedDuration = this.formatDuration(actualDuration);
+        productionData.script.timing = {
+          ...(productionData.script.timing || {}),
+          estimatedDurationSeconds: actualDuration
+        };
+        this.logger.info(`Narration duration verified at ${this.formatDuration(actualDuration)}`);
+      }
 
       productionData.assets.audio = {
         path: generatedPath,
-        duration: productionData.estimatedDuration,
+        duration: actualDuration || productionData.estimatedDuration,
+        durationSeconds: actualDuration,
         format: 'mp3',
         generatedWith: 'AI',
         quality: usable ? 'high' : null,
@@ -592,13 +610,16 @@ class ProductionManagementAgent {
         return await this.simulateVideoAssembly(productionData);
       }
 
-      // Get file stats
+      // Get file stats and record the physical MP4 duration, rather than the
+      // script's estimate. Review and publishing decisions must use this.
       const stats = await fs.stat(finalVideoPath);
+      const actualDuration = await this.aiVideoGenerator.getMediaDuration(finalVideoPath);
       
       productionData.assets.finalVideo = {
         path: finalVideoPath,
         fileSize: stats.size,
-        duration: productionData.estimatedDuration,
+        duration: actualDuration || productionData.estimatedDuration,
+        durationSeconds: actualDuration,
         generatedWith: 'AI',
         resolution: '1920x1080',
         format: 'mp4',

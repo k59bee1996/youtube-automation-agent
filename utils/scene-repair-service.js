@@ -179,10 +179,12 @@ class SceneRepairService {
     return scenes;
   }
 
-  async getEditableBundle(productionId) {
+  async getEditableBundle(productionId, options = {}) {
     const bundle = await this.db.getProductionBundle(productionId);
     if (!bundle) throw this.error('Content not found', 404);
-    if (bundle.schedule || bundle.review_status === 'approved') {
+    const isPublished = bundle.schedule?.status === 'published' || bundle.status === 'published';
+    const allowPublishedAssetRevision = options.allowPublishedAssetRevision === true && isPublished;
+    if ((bundle.schedule || bundle.review_status === 'approved') && !allowPublishedAssetRevision) {
       throw this.error('Scene repair is locked after content is approved or scheduled', 409);
     }
     if (!bundle.scenes?.length) {
@@ -469,7 +471,9 @@ class SceneRepairService {
   }
 
   async replaceAsset(productionId, sceneId, file = {}) {
-    const bundle = await this.getEditableBundle(productionId);
+    const bundle = await this.getEditableBundle(productionId, {
+      allowPublishedAssetRevision: file.allowPublishedAssetRevision === true
+    });
     const scene = bundle.scenes.find(item => item.id === sceneId);
     if (!scene) throw this.error('Scene not found', 404);
     if (scene.locked) throw this.error('Unlock this scene before replacing its asset', 409);
@@ -499,15 +503,17 @@ class SceneRepairService {
       throw this.error(error.message || 'Replacement asset is invalid', 422);
     }
 
+    const isPublishedRevision = file.allowPublishedAssetRevision === true &&
+      (bundle.schedule?.status === 'published' || bundle.status === 'published');
     const next = await this.db.updateProductionScene(productionId, sceneId, {
       assetType, assetOrigin: 'uploaded', assetPath: outputPath, provider: 'operator-upload', model: null,
       externalTaskId: null, rightsConfirmed: true, containsSyntheticMedia: file.containsSyntheticMedia === true,
-      status: 'needs_rebuild', revision: scene.revision + 1,
+      status: isPublishedRevision ? 'published_revision' : 'needs_rebuild', revision: scene.revision + 1,
       estimatedCost: {}, actualCost: { billed: false }
     });
     await this.db.saveProductionSceneRevision({
       productionId, sceneId, action: 'replace_asset', before: scene, after: next,
-      costEvidence: { billed: false }
+      costEvidence: { billed: false, localPublishedRevision: isPublishedRevision }
     });
     return next;
   }

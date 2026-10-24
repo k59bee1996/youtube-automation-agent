@@ -7,11 +7,19 @@ class ScriptWriterAgent {
     this.credentials = credentials;
     this.logger = new Logger('ScriptWriter');
     this.templates = this.loadTemplates();
-    this.aiTextService = new AITextService(credentials?.credentials || credentials || {});
+    // Scripts intentionally use Gemini even when another provider is the
+    // application-wide default; strategy and SEO keep their own routing.
+    this.aiTextService = new AITextService(
+      credentials?.credentials || credentials || {},
+      { provider: 'gemini' }
+    );
   }
 
   async initialize() {
     this.logger.info('Initializing Script Writer Agent...');
+    this.logger.info(
+      `AI routing for YouTube scripts: ${this.aiTextService.describeRequest({ task: 'script' })}`
+    );
     return true;
   }
 
@@ -86,6 +94,8 @@ class ScriptWriterAgent {
         }
       };
 
+      this.applyNarrationTiming(script, strategy);
+
       // Format for readability
       script.fullScript = this.formatFullScript(script);
       
@@ -125,6 +135,7 @@ Style/content type: ${strategy.contentType}
 Angle: ${strategy.angle}
 Target audience: ${strategy.targetAudience}
 Desired length: ${strategy.requestedLength || process.env.DEFAULT_VIDEO_LENGTH || '8-12 minutes'}
+Write enough spoken narration to genuinely fit this range at roughly 150 spoken words per minute. The duration of every section must be derived from its spoken words at that pace; do not invent longer durations. ${this.getLengthInstruction(strategy)}
 Tone: ${template.tone}
 Pacing: ${template.pacing}
 Brand voice: ${strategy.brandVoice || 'clear, credible, and engaging'}
@@ -135,12 +146,12 @@ Channel constraints: ${strategy.channelConstraints || 'none beyond the factual-s
 Preferred call to action: ${strategy.callToAction || 'invite the viewer to subscribe'}
 Keywords: ${(strategy.keywords || []).join(', ')}
 Research sources: ${JSON.stringify(strategy.researchSources || [])}
-Avoid fabricated statistics, unsupported claims, and fake urgency. List every externally verifiable factual claim in claims. Use only exact URLs from Research sources; use an empty sourceUrls array when the supplied sources do not support a claim.`;
+Avoid fabricated statistics, unsupported claims, and fake urgency. List every externally verifiable factual claim in claims. Use only exact URLs from Research sources; use an empty sourceUrls array when the supplied sources do not support a claim. Write an original, engaging script with varied sentence structure and a distinctive hook; keep every section focused and avoid repetitive phrasing.`;
 
     try {
       const response = await this.aiTextService.generateText(prompt, {
-        maxTokens: 1800,
-        temperature: 0.7
+        task: 'script',
+        maxTokens: this.getScriptMaxTokens(strategy)
       });
       const parsed = this.parseAIJsonResponse(response);
       const sections = this.normalizeAISections(parsed.sections, strategy);
@@ -149,8 +160,8 @@ Avoid fabricated statistics, unsupported claims, and fake urgency. List every ex
         throw new Error('AI script response missing required fields');
       }
 
-      this.logger.info(`Using AI script generation via ${this.aiTextService.providerName}`);
-      return {
+      this.logger.info(`AI script generation completed via ${this.aiTextService.describeRequest({ task: 'script' })}`);
+      const script = {
         title: String(parsed.title).slice(0, 100),
         hook: this.normalizeAIHook(parsed.hook),
         introduction: await this.generateIntroduction(strategy),
@@ -172,6 +183,8 @@ Avoid fabricated statistics, unsupported claims, and fake urgency. List every ex
           generationSource: 'ai'
         }
       };
+      this.applyNarrationTiming(script, strategy);
+      return script;
     } catch (error) {
       this.logger.warn(`AI script generation failed; using template fallback: ${error.message}`);
       return null;
@@ -229,6 +242,64 @@ Avoid fabricated statistics, unsupported claims, and fake urgency. List every ex
         };
       })
       .filter(section => section.title && section.content.length > 0);
+  }
+
+  getRequestedLengthRange(strategy = {}) {
+    const length = String(strategy.requestedLength || process.env.DEFAULT_VIDEO_LENGTH || '').toLowerCase();
+    const match = length.match(/(\d+)\s*(?:-|–|to)\s*(\d+)\s*minutes?/);
+    if (match) return { min: Number(match[1]) * 60, max: Number(match[2]) * 60 };
+
+    const preset = String(strategy.requestedLengthKey || '').toLowerCase();
+    if (preset === 'short') return { min: 120, max: 240 };
+    if (preset === 'medium') return { min: 480, max: 720 };
+    if (preset === 'long') return { min: 900, max: 1200 };
+    return null;
+  }
+
+  getLengthInstruction(strategy) {
+    const range = this.getRequestedLengthRange(strategy);
+    if (!range) return '';
+    return `Target ${Math.ceil(range.min / 60 * 150)}-${Math.floor(range.max / 60 * 150)} spoken words in total.`;
+  }
+
+  getScriptMaxTokens(strategy) {
+    const range = this.getRequestedLengthRange(strategy);
+    if (!range) return 1800;
+    // JSON structure and factual-claim metadata need some room beyond prose.
+    return Math.max(1800, Math.ceil((range.max / 60) * 150 * 1.6));
+  }
+
+  countWords(value) {
+    return String(value || '').trim().split(/\s+/).filter(Boolean).length;
+  }
+
+  sectionText(section) {
+    if (Array.isArray(section.content)) return section.content.join(' ');
+    if (typeof section.content === 'string') return section.content;
+    if (Array.isArray(section.steps)) return section.steps.map(step => `${step.title || ''} ${step.description || ''} ${step.tip || ''}`).join(' ');
+    if (Array.isArray(section.items)) return section.items.map(item => `${item.title || ''} ${item.description || ''}`).join(' ');
+    return '';
+  }
+
+  applyNarrationTiming(script, strategy) {
+    const sections = script.mainContent?.sections || [];
+    const introText = `${script.hook?.text || ''} ${Object.values(script.introduction || {}).filter(value => typeof value === 'string').join(' ')}`;
+    const outroText = `${(script.conclusion?.recap || []).join(' ')} ${script.conclusion?.finalThought || ''} ${Object.values(script.callToAction || {}).filter(value => typeof value === 'string').join(' ')}`;
+    const sectionWords = sections.map(section => this.countWords(this.sectionText(section)));
+    const introSeconds = Math.max(1, Math.ceil(this.countWords(introText) / 150 * 60));
+    const outroSeconds = Math.max(1, Math.ceil(this.countWords(outroText) / 150 * 60));
+    const sectionSeconds = sectionWords.map(words => Math.max(1, Math.ceil(words / 150 * 60)));
+    const totalSeconds = introSeconds + outroSeconds + sectionSeconds.reduce((sum, seconds) => sum + seconds, 0);
+
+    sections.forEach((section, index) => { section.duration = sectionSeconds[index]; });
+    script.mainContent.totalDuration = sectionSeconds.reduce((sum, seconds) => sum + seconds, 0);
+    script.duration = this.formatDuration(totalSeconds);
+    script.timing = { estimatedDurationSeconds: totalSeconds, introSeconds, outroSeconds };
+
+    const range = this.getRequestedLengthRange(strategy);
+    if (range && (totalSeconds < range.min || totalSeconds > range.max)) {
+      this.logger.warn(`Narration estimate is ${this.formatDuration(totalSeconds)}, outside requested ${strategy.requestedLength}; Quality Review will require correction.`);
+    }
   }
 
   normalizeAIClaims(claims, sources) {

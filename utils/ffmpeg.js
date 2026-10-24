@@ -31,6 +31,27 @@ function getFFmpegPath() {
   return cachedPath;
 }
 
+/**
+ * Read a media duration without decoding the whole file.  FFprobe ships with
+ * the Docker image alongside FFmpeg; callers deliberately get `null` when it
+ * is not available so that rendering can retain its safe fallback.
+ */
+async function probeMediaDuration(filePath) {
+  if (!filePath) return null;
+
+  const probePath = process.env.FFPROBE_PATH || 'ffprobe';
+  try {
+    const { stdout } = await execFileAsync(probePath, [
+      '-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1', filePath
+    ]);
+    const duration = Number.parseFloat(String(stdout).trim());
+    return Number.isFinite(duration) && duration > 0 ? duration : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 async function checkFFmpeg() {
   try {
     await execFileAsync(getFFmpegPath(), ['-version']);
@@ -55,4 +76,4 @@ function ffmpegInstallHint() {
   return `FFmpeg not found. Install it with: ${platformHint} — or run "npm install" again to fetch the bundled ffmpeg-static binary, or set FFMPEG_PATH to your ffmpeg executable.`;
 }
 
-module.exports = { getFFmpegPath, checkFFmpeg, runFFmpeg, ffmpegInstallHint };
+module.exports = { getFFmpegPath, checkFFmpeg, runFFmpeg, ffmpegInstallHint, probeMediaDuration };

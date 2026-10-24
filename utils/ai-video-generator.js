@@ -5,7 +5,7 @@ const path = require('path');
 const axios = require('axios');
 const sharp = require('sharp');
 const { Logger } = require('./logger');
-const { runFFmpeg, checkFFmpeg, ffmpegInstallHint } = require('./ffmpeg');
+const { runFFmpeg, checkFFmpeg, ffmpegInstallHint, probeMediaDuration } = require('./ffmpeg');
 const { MediaGenerationService } = require('./media-generation-service');
 
 class AIVideoGenerator {
@@ -507,7 +507,14 @@ class AIVideoGenerator {
       }
 
       const videoPath = outputPath.replace('.mp4', '_visual.mp4');
-      const duration = this.calculateScriptDuration(script);
+      // The narration is the source of truth.  Using only the script's
+      // declared section durations previously made the slideshow much shorter
+      // than its audio and `-shortest` then cut the narration off.
+      const narrationDuration = await probeMediaDuration(audioPath);
+      const duration = narrationDuration || this.calculateScriptDuration(script);
+      this.logger.info(
+        `Rendering slideshow for ${duration.toFixed(2)}s (${narrationDuration ? 'measured narration audio' : 'script estimate'})`
+      );
       await this.renderSlidesToVideo(stills, duration, videoPath);
 
       // Add audio
@@ -526,7 +533,13 @@ class AIVideoGenerator {
     }
 
     const fade = 0.5;
-    const perSlide = Math.max(2, totalDuration / stills.length);
+    // A chain of crossfades is shorter than the sum of its source clips by
+    // `fade * (slideCount - 1)`. Account for that overlap so the resulting
+    // visual timeline is exactly as long as the narration.
+    const perSlide = Math.max(
+      fade + 0.1,
+      (Number(totalDuration) + fade * (stills.length - 1)) / stills.length
+    );
 
     const args = ['-y'];
     for (const still of stills) {
@@ -589,6 +602,10 @@ class AIVideoGenerator {
     }
 
     return images;
+  }
+
+  async getMediaDuration(filePath) {
+    return probeMediaDuration(filePath);
   }
 
   createSlideshowHTML(script, visualAssets) {
@@ -779,32 +796,48 @@ class AIVideoGenerator {
     // Estimate duration based on word count (average 150 words per minute)
     let totalWords = 0;
     
-    if (script.hook) totalWords += script.hook.text.split(' ').length;
+    const countWords = (value) => String(value || '').trim().split(/\s+/).filter(Boolean).length;
+
+    if (script.hook) totalWords += countWords(script.hook.text);
     if (script.introduction) {
-      totalWords += (script.introduction.greeting || '').split(' ').length;
-      totalWords += (script.introduction.topicIntro || '').split(' ').length;
+      totalWords += countWords(script.introduction.greeting);
+      totalWords += countWords(script.introduction.topicIntro);
+      totalWords += countWords(script.introduction.valueProposition);
+      totalWords += countWords(script.introduction.credibility);
     }
     
     if (script.mainContent && script.mainContent.sections) {
       script.mainContent.sections.forEach(section => {
         if (typeof section.content === 'string') {
-          totalWords += section.content.split(' ').length;
+          totalWords += countWords(section.content);
+        } else if (Array.isArray(section.content)) {
+          // AI JSON scripts use an array of spoken lines. This was omitted,
+          // causing a 2-4 minute narration to render as a ~30 second video.
+          totalWords += section.content.reduce((sum, line) => sum + countWords(line), 0);
         }
         if (section.items) {
           section.items.forEach(item => {
-            totalWords += (item.title + ' ' + item.description).split(' ').length;
+            totalWords += countWords(`${item.title || ''} ${item.description || ''}`);
           });
         }
         if (section.steps) {
           section.steps.forEach(step => {
-            totalWords += (step.title + ' ' + step.description).split(' ').length;
+            totalWords += countWords(`${step.title || ''} ${step.description || ''} ${step.tip || ''}`);
           });
         }
       });
     }
     
     if (script.conclusion) {
-      totalWords += script.conclusion.finalThought.split(' ').length;
+      totalWords += countWords(script.conclusion.finalThought);
+      totalWords += (script.conclusion.recap || []).reduce((sum, line) => sum + countWords(line), 0);
+    }
+
+    if (script.callToAction) {
+      totalWords += countWords(script.callToAction.subscribe);
+      totalWords += countWords(script.callToAction.like);
+      totalWords += countWords(script.callToAction.comment);
+      totalWords += countWords(script.callToAction.nextVideo);
     }
     
     // Convert to duration (150 words per minute)

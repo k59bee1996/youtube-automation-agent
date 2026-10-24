@@ -216,11 +216,23 @@ class PublishingSchedulingAgent {
       },
       status: {
         privacyStatus: metadata.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
-        publishAt: scheduleEntry.publishTime,
         selfDeclaredMadeForKids: false,
         containsSyntheticMedia: metadata.containsSyntheticMedia === true
       }
     };
+
+    // YouTube only accepts publishAt for a future, private scheduled upload.
+    // Immediate publishing must omit it, otherwise a "now" timestamp can be
+    // rejected or leave the video private instead of applying the chosen privacy.
+    const publishAt = new Date(scheduleEntry.publishTime);
+    if (
+      !metadata.publishImmediately &&
+      videoMetadata.status.privacyStatus === 'private' &&
+      !Number.isNaN(publishAt.getTime()) &&
+      publishAt.getTime() > Date.now() + 1000
+    ) {
+      videoMetadata.status.publishAt = publishAt.toISOString();
+    }
     
     // Resolve the file before marking the network upload as attempted.
     const videoStream = await this.getVideoStream(metadata.video.path);

@@ -727,9 +727,18 @@ class YouTubeAutomationAgent {
             contentType: req.get('content-type'),
             filename: req.get('x-file-name'),
             rightsConfirmed: req.get('x-rights-confirmed') === 'true',
-            containsSyntheticMedia: req.get('x-synthetic-media') === 'true'
+            containsSyntheticMedia: req.get('x-synthetic-media') === 'true',
+            allowPublishedAssetRevision: req.get('x-local-published-revision') === 'true'
           });
-          await this.refreshContentReview(req.params.productionId, 'Replacement scene asset must be rebuilt and reviewed');
+          const publishedRevision = req.get('x-local-published-revision') === 'true';
+          // A published upload is immutable from this app. Keep its approval
+          // record intact while retaining the imported file as a local revision.
+          if (!publishedRevision) {
+            await this.refreshContentReview(
+              req.params.productionId,
+              'Replacement scene asset must be rebuilt and reviewed'
+            );
+          }
           return res.json({ success: true, result: this.scenes.decorateScene(result, req.params.productionId) });
         } catch (error) {
           return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code, details: error.details });
@@ -786,6 +795,15 @@ class YouTubeAutomationAgent {
     this.app.post('/api/content/:productionId/approve', protect, async (req, res) => {
       try {
         const result = await this.approveContent(req.params.productionId, req.body || {});
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, quality: error.quality });
+      }
+    });
+
+    this.app.post('/api/content/:productionId/approve-publish-now', protect, async (req, res) => {
+      try {
+        const result = await this.approveAndPublishNow(req.params.productionId, req.body || {});
         return res.json({ success: true, result });
       } catch (error) {
         return res.status(error.status || 400).json({ success: false, error: error.message, quality: error.quality });
@@ -1788,6 +1806,45 @@ class YouTubeAutomationAgent {
       data: { productionId, publishTime: scheduleEntry.publishTime }
     });
     return { productionId, reviewStatus: 'approved', qualityScore: quality.score, schedule: scheduleEntry };
+  }
+
+  async approveAndPublishNow(productionId, input = {}) {
+    if (!this.agents.publishing) {
+      const error = new Error('YouTube publishing is not configured');
+      error.status = 503;
+      throw error;
+    }
+
+    // Use the normal approval path first so immediate publishing cannot bypass
+    // editor confirmations, provenance checks, or Quality Review.
+    const approved = await this.approveContent(productionId, {
+      ...input,
+      publishTime: new Date().toISOString(),
+      reviewNotes: input.reviewNotes || 'Approved for immediate publication by operator'
+    });
+
+    const schedule = approved.schedule;
+    schedule.publishTime = new Date().toISOString();
+    schedule.status = 'scheduled';
+    schedule.metadata = { ...schedule.metadata, publishImmediately: true };
+    await this.db.updateScheduleEntry(schedule);
+    await this.agents.publishing.loadPublishQueue();
+
+    const published = await this.agents.publishing.publishContent(productionId);
+    await this.db.updateProductionStatus(productionId, 'published');
+    await this.operator.notify({
+      type: 'content_published', level: 'success', title: 'Content published immediately',
+      message: `${schedule.title} was uploaded to YouTube.`,
+      data: { productionId, youtubeUrl: published.youtubeUrl }
+    });
+
+    return {
+      productionId,
+      reviewStatus: 'approved',
+      qualityScore: approved.qualityScore,
+      schedule,
+      publish: published
+    };
   }
 
   async start() {

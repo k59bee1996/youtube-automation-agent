@@ -14,6 +14,9 @@ class ContentStrategyAgent {
 
   async initialize() {
     this.logger.info('Initializing Content Strategy Agent...');
+    this.logger.info(
+      `AI routing for content strategy and autonomous planning: ${this.aiTextService.describeRequest({ task: 'strategy' })}`
+    );
     await this.loadHistoricalData();
     await this.analyzeTrends();
     return true;
@@ -353,10 +356,13 @@ Allowed source catalog: ${JSON.stringify(research.sourceCatalog)}
 Recent topics to avoid repeating: ${JSON.stringify(research.recentTopics)}
 Operator-approved performance learnings to apply: ${JSON.stringify(research.approvedLearnings)}
 
-Do not invent trend data, statistics, sources, URLs, or factual claims. Use only exact URLs from the supplied source catalog. Apply only the supplied approved learnings; pending or rejected recommendations are not authorized. Prefer evergreen topics when the supplied signals are weak. Learnings with category "audience_demand" are audience-requested topics mined from real comments on published videos; prefer planning a video that directly answers one when it fits the channel objective, and cite it in the rationale.`;
+Do not invent trend data, statistics, sources, URLs, or factual claims. Use only exact URLs from the supplied source catalog. Apply only the supplied approved learnings; pending or rejected recommendations are not authorized. Prefer evergreen topics when the supplied signals are weak. Learnings with category "audience_demand" are audience-requested topics mined from real comments on published videos; prefer planning a video that directly answers one when it fits the channel objective, and cite it in the rationale. Generate distinct, non-overlapping angles and avoid repeating a recent topic or framing.`;
 
     try {
-      const response = await this.aiTextService.generateText(prompt, { maxTokens: 1800, temperature: 0.65 });
+      const response = await this.aiTextService.generateText(prompt, {
+        task: 'strategy',
+        maxTokens: 1800
+      });
       const parsed = this.parseAIJsonResponse(response);
       return Array.isArray(parsed) ? parsed : Array.isArray(parsed.plan) ? parsed.plan : [];
     } catch (error) {
@@ -443,12 +449,12 @@ Return only valid JSON with this exact shape:
 Requested topic: ${requestedTopic || 'none'}
 Trending topics available: ${trendingTopics || 'Technology Trends'}
 Channel target audience: ${process.env.TARGET_AUDIENCE || 'General audience interested in educational content'}
-Avoid fabricated claims and unsupported numbers.`;
+Avoid fabricated claims and unsupported numbers. Make a specific, fresh choice with an audience-relevant angle; avoid generic wording and avoid duplicating the supplied trending topics verbatim.`;
 
     try {
       const response = await this.aiTextService.generateText(prompt, {
-        maxTokens: 1000,
-        temperature: 0.7
+        task: 'strategy',
+        maxTokens: 1000
       });
       const parsed = this.parseAIJsonResponse(response);
       const topic = String(parsed.topic || requestedTopic || '').trim();
@@ -462,7 +468,7 @@ Avoid fabricated claims and unsupported numbers.`;
         ? parsed.keywords.map(keyword => String(keyword).trim()).filter(Boolean)
         : this.extractKeywords(topic);
 
-      this.logger.info(`Using AI content strategy via ${this.aiTextService.providerName}`);
+      this.logger.info(`AI content strategy completed via ${this.aiTextService.describeRequest({ task: 'strategy' })}`);
       return {
         topic,
         angle: String(parsed.angle || await this.generateAngle(topic)).trim(),

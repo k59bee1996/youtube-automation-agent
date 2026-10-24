@@ -25,7 +25,7 @@ Research topics → write scripts → generate narration and visuals → assembl
 - **Outcome & ROI Studio:** align the operator with a measurable KPI, target window, budget, and available revenue/cost evidence without converting missing economics into false zeroes.
 - **Platform-ready foundation:** audits already retain their target platform, providing the durable contract for planned TikTok and Instagram/Reels publishing and analytics adapters.
 
-DarkzSEO is optional. Install DarkzSEO 1.4+ into Python or set `DARKZSEO_PATH`; when it is unavailable, AgentTube records the reason and keeps the existing approval workflow operational.
+DarkzSEO is optional. The Docker image includes it automatically; for host-based runs, install DarkzSEO 1.4+ into Python or set `DARKZSEO_PATH`. When it is unavailable, AgentTube records the reason and keeps the existing approval workflow operational.
 
 See the complete release history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -108,6 +108,8 @@ python -m pip install -e ../darkzseo
 ```
 
 Alternatively set `DARKZSEO_PATH` to `darkzseo.py`. The adapter uses a shell-free Python child process, sends content JSON over stdin, and reads JSON-only stdout. DarkzSEO 1.4 or newer is required.
+
+Docker Compose images already include an isolated DarkzSEO installation at build time. Run `docker compose up --build`; do not set `DARKZSEO_PATH` unless you intentionally want to override the image's built-in path.
 
 ### What you need
 
